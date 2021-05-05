@@ -94,6 +94,21 @@ namespace ACMESharp.Crypto.JOSE.Impl
 
         }
 
+        public void ImportJwk(
+            string jwkSer,
+            int hashSize
+        )
+        {
+            var jwk = JsonConvert.DeserializeObject<ESJwk>(jwkSer);
+            this.HashSize = hashSize;
+            this.Init();
+            ECParameters parameters = this._dsa.ExportParameters(true);
+            parameters.D = null;
+            parameters.Q.X = CryptoHelper.Base64.UrlDecode(jwk.x);
+            parameters.Q.Y = CryptoHelper.Base64.UrlDecode(jwk.y);
+            this._dsa.ImportParameters(parameters);
+        }
+
         public object ExportJwk(bool canonical = false)
         {
             // Note, we only produce a canonical form of the JWK
