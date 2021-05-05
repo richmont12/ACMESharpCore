@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using ACMESharp.Crypto;
@@ -122,12 +123,17 @@ namespace ACMESharp.Protocol
         /// https://tools.ietf.org/html/draft-ietf-acme-acme-12#section-7.1.1
         /// </remarks>
         public async Task<ServiceDirectory> GetDirectoryAsync(
-            CancellationToken cancel = default(CancellationToken))
-        {
+            bool useBaseUrlOnly = false,
+            CancellationToken cancel = default(CancellationToken)
+        ) {
+
             return await SendAcmeAsync<ServiceDirectory>(
-                    new Uri(_http.BaseAddress, Directory.Directory),
-                    skipNonce: true,
-                    cancel: cancel);
+                useBaseUrlOnly
+                    ? _http.BaseAddress
+                    : new Uri(_http.BaseAddress,
+                        Directory.Directory),
+                skipNonce: true,
+                cancel: cancel);
         }
 
         /// <summary>
@@ -188,6 +194,74 @@ namespace ACMESharp.Protocol
                     },
                     cancel: cancel);
         }
+
+        public async Task<AccountDetails> CreateAccountAsync(
+            IEnumerable<string> contacts,
+            string eabKeyId,
+            string eabHmacKey,
+            bool termsOfServiceAgreed = false,
+            bool throwOnExistingAccount = false,
+            CancellationToken cancel = default(CancellationToken)
+        ) {
+            var header = new Dictionary<string, object> {
+                             ["alg"] = "HS256",
+                             ["url"] = new Uri(_http.BaseAddress, Directory.NewAccount),
+                             ["kid"] = eabKeyId,
+                         };
+            var headerJson = JsonConvert.SerializeObject(header,
+                Formatting.None);
+            var protectedHeaderBase64 =
+                CryptoHelper.Base64.UrlEncode(headerJson);
+            var accountKeyBase64 = CryptoHelper.Base64.UrlEncode(
+                JsonConvert.SerializeObject(Signer.ExportJwk(),
+                    Formatting.None));
+
+            var signingBytes =
+                System.Text.Encoding.ASCII.GetBytes(
+                    $"{protectedHeaderBase64}.{accountKeyBase64}");
+
+            // eab signature is the hash of the header and account key, using the eab key
+            byte[] signatureHash;
+
+            switch (header["alg"]) {
+                case "HS512":
+                    using (var hs512 =
+                        new HMACSHA512(
+                            CryptoHelper.Base64.UrlDecode(eabHmacKey)))
+                        signatureHash = hs512.ComputeHash(signingBytes);
+                    break;
+                case "HS384":
+                    using (var hs384 =
+                        new HMACSHA384(
+                            CryptoHelper.Base64.UrlDecode(eabHmacKey)))
+                        signatureHash = hs384.ComputeHash(signingBytes);
+                    break;
+                default:
+                    using (var hs256 =
+                        new HMACSHA256(
+                            CryptoHelper.Base64.UrlDecode(eabHmacKey)))
+                        signatureHash = hs256.ComputeHash(signingBytes);
+                    break;
+            }
+
+            var signatureBase64 =
+                CryptoHelper.Base64.UrlEncode(signatureHash);
+
+
+            var externalAccountBinding = new ExternalAccountBinding {
+                Protected =
+                                                 protectedHeaderBase64,
+                Payload = accountKeyBase64,
+                Signature = signatureBase64
+            };
+
+            return await CreateAccountAsync(contacts,
+                termsOfServiceAgreed,
+                externalAccountBinding,
+                throwOnExistingAccount,
+                cancel);
+        }
+
 
         /// <summary>
         /// </summary>
